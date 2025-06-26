@@ -21,7 +21,7 @@ const __dirname = path.dirname(__filename);
 // =========================
 const app = express();
 const PORT = 3000;
-const JWT_SECRET = "super-secret-key";
+const JWT_SECRET = "super-secret-key"; // ⚠️ Use .env in production
 const MONGO_URI = "mongodb+srv://123:123@cluster0.muiyvkn.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
 // ====================
@@ -58,7 +58,7 @@ const userSchema = new mongoose.Schema({
   firstName: String,
   lastName: String,
   email: { type: String, unique: true },
-  password: String,
+  password: String, // ⚠️ Hash in production
   role: { type: String, default: "user" },
   profilePicture: { type: String, default: "" },
   status: {
@@ -177,7 +177,7 @@ app.get("/api/posts/:id", async (req, res) => {
 });
 
 // ==========================
-// 👤 User Registration
+// 👤 User Registration/Login
 // ==========================
 app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
   try {
@@ -189,7 +189,7 @@ app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
       firstName,
       lastName,
       email,
-      password,
+      password, // ⚠️ Use bcrypt in production
       profilePicture: req.file ? `/uploads/${req.file.filename}` : "",
       status: "Offline",
     });
@@ -199,6 +199,46 @@ app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: "Registration error", error: err.message });
   }
+});
+
+app.post("/api/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email, password }); // ⚠️ bcrypt recommended
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+
+    await User.findByIdAndUpdate(user._id, { status: "Active" });
+
+    const token = jwt.sign(
+      {
+        id: user._id,
+        email: user.email,
+        role: user.role,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        profilePicture: user.profilePicture,
+      },
+      JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    res.json({ token });
+  } catch (err) {
+    res.status(500).json({ message: "Login error", error: err.message });
+  }
+});
+
+app.post("/api/logout", authenticate, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user.id, { status: "Offline" });
+    res.json({ message: "Logged out" });
+  } catch (err) {
+    res.status(403).json({ message: "Invalid token", error: err.message });
+  }
+});
+
+app.get("/api/profile", authenticate, (req, res) => {
+  res.json({ user: req.user });
 });
 
 // ==========================
@@ -215,7 +255,7 @@ app.get("/api/users", authenticate, requireAdmin, async (req, res) => {
       email: user.email,
       role: user.role,
       profilePicture: user.profilePicture,
-      status: user.status || "Offline",
+      status: user.status || "Offline", // ✅ Always provide status
     }));
 
     res.json(enrichedUsers);
@@ -249,9 +289,83 @@ app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// ==============================
+// 📝 Update Existing Post (Admin)
+// ==============================
+app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    const postId = req.params.id;
+
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    if (req.file) {
+      if (post.image) {
+        const oldImagePath = path.join(__dirname, post.image);
+        fs.unlink(oldImagePath, (err) => {
+          if (err) console.warn("⚠️ Failed to delete old image:", err.message);
+        });
+      }
+      post.image = `/uploads/${req.file.filename}`;
+    }
+
+    post.title = title || post.title;
+    post.content = content || post.content;
+
+    await post.save();
+    res.json({ message: "Post updated successfully", post });
+  } catch (err) {
+    res.status(500).json({ message: "Update failed", error: err.message });
+  }
+});
+
+
+
+
+
+
+
+
+// 👤 Update Own Profile
+app.put("/api/profile", authenticate, upload.single("profilePicture"), async (req, res) => {
+  try {
+    const updates = {
+      firstName: req.body.firstName,
+      lastName: req.body.lastName,
+      email: req.body.email,
+    };
+
+    if (req.file) {
+      updates.profilePicture = `/uploads/${req.file.filename}`;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(req.user.id, updates, {
+      new: true,
+    }).select("-password");
+
+    res.json({ message: "Profile updated", user: updatedUser });
+  } catch (err) {
+    res.status(500).json({ message: "Update failed", error: err.message });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // ======================
-// 🟢 Start Server
+// 🟢 Server Activation
 // ======================
 app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
-});
+})
