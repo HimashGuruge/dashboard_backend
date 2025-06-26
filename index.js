@@ -14,7 +14,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 const JWT_SECRET = "super-secret-key";
-const MONGO_URI = "mongodb+srv://123:123@cluster0.muiyvkn.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+const MONGO_URI =
+  "mongodb+srv://123:123@cluster0.muiyvkn.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
 // Ensure uploads folder exists
 const uploadsDir = path.join(__dirname, "uploads");
@@ -60,6 +61,7 @@ const requestSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   message: { type: String, required: true, trim: true },
   submittedAt: { type: Date, default: Date.now },
+  read: { type: Boolean, default: false },  // <-- Added to track read status
 });
 const Request = mongoose.model("Request", requestSchema);
 
@@ -236,7 +238,9 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
     if (req.file) {
       if (post.image) {
         const oldImagePath = path.join(__dirname, post.image);
-        fs.unlink(oldImagePath, () => {});
+        fs.unlink(oldImagePath, (err) => {
+          if (err) console.error("Failed to delete old image:", err);
+        });
       }
       post.image = `/uploads/${req.file.filename}`;
     }
@@ -258,7 +262,9 @@ app.delete("/api/posts/:id/image", authenticate, requireAdmin, async (req, res) 
 
     if (post.image) {
       const filePath = path.join(__dirname, post.image);
-      fs.unlink(filePath, () => {});
+      fs.unlink(filePath, (err) => {
+        if (err) console.error("Failed to delete post image:", err);
+      });
       post.image = "";
       await post.save();
     }
@@ -318,6 +324,7 @@ app.post("/api/request", authenticate, async (req, res) => {
       userId: req.user.id,
       title,
       message,
+      read: false, // default on new request
     });
 
     await newRequest.save();
@@ -330,20 +337,50 @@ app.post("/api/request", authenticate, async (req, res) => {
 app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
   try {
     const requests = await Request.find()
-      .sort({ submittedAt: -1 })
-      .populate("userId", "firstName lastName email");
+      .sort({ submittedAt: -1 }) // Sort newest first
+      .populate("userId", "firstName lastName email"); // Populate user info
     res.json(requests);
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch requests", error: err.message });
   }
 });
 
-// Delete a post by ID (admin only)
+// New: Get unread requests count
+app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const unreadCount = await Request.countDocuments({ read: false });
+    res.json({ unreadCount });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch unread count", error: err.message });
+  }
+});
+
+// New: Mark request as read
+app.put("/api/requests/:id/mark-read", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const requestId = req.params.id;
+    const updatedRequest = await Request.findByIdAndUpdate(
+      requestId,
+      { read: true },
+      { new: true }
+    );
+
+    if (!updatedRequest) return res.status(404).json({ message: "Request not found" });
+
+    res.json({ message: "Request marked as read", request: updatedRequest });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to mark read", error: err.message });
+  }
+});
+
+// ========== DELETE POST ROUTE ==========
+
 app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
+    // Delete image file from disk if exists
     if (post.image) {
       const imagePath = path.join(uploadsDir, path.basename(post.image));
       fs.unlink(imagePath, (err) => {
