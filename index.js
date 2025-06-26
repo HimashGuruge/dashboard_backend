@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
-const JWT_SECRET = "super-secret-key"; // Use env vars in production
+const JWT_SECRET = "super-secret-key";
 const MONGO_URI = "mongodb+srv://123:123@cluster0.muiyvkn.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
 // Ensure uploads folder exists
@@ -37,22 +37,31 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// MongoDB connection & schemas
+// MongoDB connection
 mongoose
   .connect(MONGO_URI, { dbName: "authDB" })
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ MongoDB error:", err));
 
+// Schemas
 const userSchema = new mongoose.Schema({
   firstName: { type: String, required: true },
   lastName: { type: String, required: true },
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true }, // Hash in production
+  password: { type: String, required: true },
   role: { type: String, default: "user" },
   profilePicture: { type: String, default: "" },
   status: { type: String, enum: ["Active", "Offline", "Pending"], default: "Offline" },
 });
 const User = mongoose.model("User", userSchema);
+
+const requestSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  title: { type: String, required: true, trim: true },
+  message: { type: String, required: true, trim: true },
+  submittedAt: { type: Date, default: Date.now },
+});
+const Request = mongoose.model("Request", requestSchema);
 
 const postSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -63,7 +72,7 @@ const postSchema = new mongoose.Schema({
 });
 const Post = mongoose.model("Post", postSchema);
 
-// JWT Authentication middleware
+// Middleware for JWT
 const authenticate = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Token missing" });
@@ -77,13 +86,13 @@ const authenticate = (req, res, next) => {
   }
 };
 
-// Admin check middleware
 const requireAdmin = (req, res, next) => {
   if (req.user.role !== "admin") return res.status(403).json({ message: "Admins only" });
   next();
 };
 
-// Register user
+// ========== AUTH ROUTES ==========
+
 app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
   try {
     const { firstName, lastName, email, password } = req.body;
@@ -94,7 +103,7 @@ app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
       firstName,
       lastName,
       email,
-      password, // ⚠️ Hash before save in production
+      password,
       profilePicture: req.file ? `/uploads/${req.file.filename}` : "",
       status: "Offline",
     });
@@ -106,11 +115,10 @@ app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
   }
 });
 
-// Login
 app.post("/api/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email, password }); // ⚠️ bcrypt recommended
+    const user = await User.findOne({ email, password });
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
     await User.findByIdAndUpdate(user._id, { status: "Active" });
@@ -134,7 +142,6 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// Logout
 app.post("/api/logout", authenticate, async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.user.id, { status: "Offline" });
@@ -144,7 +151,8 @@ app.post("/api/logout", authenticate, async (req, res) => {
   }
 });
 
-// Get user profile
+// ========== PROFILE ROUTES ==========
+
 app.get("/api/profile", authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select("-password");
@@ -155,7 +163,6 @@ app.get("/api/profile", authenticate, async (req, res) => {
   }
 });
 
-// Update user profile
 app.put("/api/profile", authenticate, upload.single("profilePicture"), async (req, res) => {
   try {
     const updates = {
@@ -174,14 +181,14 @@ app.put("/api/profile", authenticate, upload.single("profilePicture"), async (re
     }).select("-password");
 
     if (!updatedUser) return res.status(404).json({ message: "User not found" });
-
     res.json({ message: "Profile updated", user: updatedUser });
   } catch (err) {
     res.status(500).json({ message: "Update failed", error: err.message });
   }
 });
 
-// Get all posts
+// ========== POST ROUTES ==========
+
 app.get("/api/posts", async (req, res) => {
   try {
     const posts = await Post.find().sort({ createdAt: -1 });
@@ -191,7 +198,6 @@ app.get("/api/posts", async (req, res) => {
   }
 });
 
-// Get single post
 app.get("/api/posts/:id", async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -202,7 +208,6 @@ app.get("/api/posts/:id", async (req, res) => {
   }
 });
 
-// Create post (admin only)
 app.post("/api/posts", authenticate, requireAdmin, upload.single("image"), async (req, res) => {
   try {
     const { title, content } = req.body;
@@ -222,7 +227,6 @@ app.post("/api/posts", authenticate, requireAdmin, upload.single("image"), async
   }
 });
 
-// Update post (admin only)
 app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), async (req, res) => {
   try {
     const { title, content } = req.body;
@@ -230,12 +234,9 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
     if (!post) return res.status(404).json({ message: "Post not found" });
 
     if (req.file) {
-      // Delete old image if exists
       if (post.image) {
         const oldImagePath = path.join(__dirname, post.image);
-        fs.unlink(oldImagePath, (err) => {
-          if (err) console.warn("Failed to delete old image:", err.message);
-        });
+        fs.unlink(oldImagePath, () => {});
       }
       post.image = `/uploads/${req.file.filename}`;
     }
@@ -244,13 +245,12 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
     post.content = content || post.content;
 
     await post.save();
-    res.json({ message: "Post updated successfully", post });
+    res.json({ message: "Post updated", post });
   } catch (err) {
     res.status(500).json({ message: "Update failed", error: err.message });
   }
 });
 
-// Delete post image (admin only)
 app.delete("/api/posts/:id/image", authenticate, requireAdmin, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -258,21 +258,19 @@ app.delete("/api/posts/:id/image", authenticate, requireAdmin, async (req, res) 
 
     if (post.image) {
       const filePath = path.join(__dirname, post.image);
-      fs.unlink(filePath, (err) => {
-        if (err) console.warn("Could not delete image file:", err.message);
-        else console.log("Image file removed:", filePath);
-      });
+      fs.unlink(filePath, () => {});
       post.image = "";
       await post.save();
     }
 
-    res.json({ message: "Image removed successfully", post });
+    res.json({ message: "Image removed", post });
   } catch (err) {
     res.status(500).json({ message: "Failed to remove image", error: err.message });
   }
 });
 
-// Get all users (admin only)
+// ========== USER ROUTES (ADMIN ONLY) ==========
+
 app.get("/api/users", authenticate, requireAdmin, async (req, res) => {
   try {
     const users = await User.find({}, "firstName lastName email status").exec();
@@ -282,7 +280,6 @@ app.get("/api/users", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// Update user (admin only)
 app.put("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const updates = { ...req.body };
@@ -297,7 +294,6 @@ app.put("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// Delete user (admin only)
 app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const deletedUser = await User.findByIdAndDelete(req.params.id);
@@ -309,6 +305,60 @@ app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// ========== REQUEST ROUTES ==========
+
+app.post("/api/request", authenticate, async (req, res) => {
+  try {
+    const { title, message } = req.body;
+    if (!title || !message) {
+      return res.status(400).json({ message: "Title and message are required" });
+    }
+
+    const newRequest = new Request({
+      userId: req.user.id,
+      title,
+      message,
+    });
+
+    await newRequest.save();
+    res.status(201).json({ message: "Request submitted" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to submit request", error: err.message });
+  }
+});
+
+app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const requests = await Request.find()
+      .sort({ submittedAt: -1 })
+      .populate("userId", "firstName lastName email");
+    res.json(requests);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch requests", error: err.message });
+  }
+});
+
+// Delete a post by ID (admin only)
+app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    if (post.image) {
+      const imagePath = path.join(uploadsDir, path.basename(post.image));
+      fs.unlink(imagePath, (err) => {
+        if (err) console.error("Failed to delete post image:", err);
+      });
+    }
+
+    await post.deleteOne();
+    res.json({ message: "Post deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete post", error: err.message });
+  }
+});
+
+// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
