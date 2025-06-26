@@ -61,7 +61,7 @@ const requestSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   message: { type: String, required: true, trim: true },
   submittedAt: { type: Date, default: Date.now },
-  read: { type: Boolean, default: false },  // <-- Added to track read status
+  read: { type: Boolean, default: false }, // Track read status
 });
 const Request = mongoose.model("Request", requestSchema);
 
@@ -74,7 +74,7 @@ const postSchema = new mongoose.Schema({
 });
 const Post = mongoose.model("Post", postSchema);
 
-// Middleware for JWT
+// Middleware for JWT Authentication
 const authenticate = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Token missing" });
@@ -88,6 +88,7 @@ const authenticate = (req, res, next) => {
   }
 };
 
+// Middleware to require admin role
 const requireAdmin = (req, res, next) => {
   if (req.user.role !== "admin") return res.status(403).json({ message: "Admins only" });
   next();
@@ -313,6 +314,7 @@ app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
 
 // ========== REQUEST ROUTES ==========
 
+// Submit a new request (user)
 app.post("/api/request", authenticate, async (req, res) => {
   try {
     const { title, message } = req.body;
@@ -324,7 +326,7 @@ app.post("/api/request", authenticate, async (req, res) => {
       userId: req.user.id,
       title,
       message,
-      read: false, // default on new request
+      read: false, // default unread
     });
 
     await newRequest.save();
@@ -334,18 +336,29 @@ app.post("/api/request", authenticate, async (req, res) => {
   }
 });
 
+// Admin: get all requests with user info
 app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
   try {
     const requests = await Request.find()
-      .sort({ submittedAt: -1 }) // Sort newest first
-      .populate("userId", "firstName lastName email"); // Populate user info
+      .sort({ submittedAt: -1 })
+      .populate("userId", "firstName lastName email");
     res.json(requests);
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch requests", error: err.message });
   }
 });
 
-// New: Get unread requests count
+// User: get their own requests only
+app.get("/api/myrequests", authenticate, async (req, res) => {
+  try {
+    const myRequests = await Request.find({ userId: req.user.id }).sort({ submittedAt: -1 });
+    res.json(myRequests);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch your requests", error: err.message });
+  }
+});
+
+// Get unread requests count (admin)
 app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
   try {
     const unreadCount = await Request.countDocuments({ read: false });
@@ -355,21 +368,24 @@ app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, re
   }
 });
 
-// New: Mark request as read
-app.put("/api/requests/:id/mark-read", authenticate, requireAdmin, async (req, res) => {
+// Mark a request as read (owner or admin)
+app.put("/api/requests/:id/mark-read", authenticate, async (req, res) => {
   try {
     const requestId = req.params.id;
-    const updatedRequest = await Request.findByIdAndUpdate(
-      requestId,
-      { read: true },
-      { new: true }
-    );
+    const request = await Request.findById(requestId);
+    if (!request) return res.status(404).json({ message: "Request not found" });
 
-    if (!updatedRequest) return res.status(404).json({ message: "Request not found" });
+    // Only owner or admin can mark as read
+    if (request.userId.toString() !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorized" });
+    }
 
-    res.json({ message: "Request marked as read", request: updatedRequest });
+    request.read = true;
+    await request.save();
+
+    res.json({ message: "Request marked as read", request });
   } catch (err) {
-    res.status(500).json({ message: "Failed to mark read", error: err.message });
+    res.status(500).json({ message: "Failed to mark as read", error: err.message });
   }
 });
 
@@ -393,7 +409,43 @@ app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: "Failed to delete post", error: err.message });
   }
+})
+
+
+
+
+
+// PUT /api/requests/:id/mark-read
+app.put("/api/requests/:id/mark-read", authenticate, async (req, res) => {
+  try {
+    const requestId = req.params.id;
+    const request = await Request.findById(requestId);
+    if (!request) return res.status(404).json({ message: "Request not found" });
+
+    // Only owner (requester) or admin can mark as read
+    if (request.userId.toString() !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    request.read = true;
+    await request.save();
+
+    res.json({ message: "Request marked as read", request });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to mark as read", error: err.message });
+  }
 });
+
+
+
+
+
+
+
+
+
+
+;
 
 // Start server
 app.listen(PORT, () => {
