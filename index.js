@@ -27,7 +27,7 @@ const MONGO_URI = "mongodb+srv://123:123@cluster0.muiyvkn.mongodb.net/?retryWrit
 // ====================
 // 🧩 Middleware Stack
 // ====================
-app.use(cors({ origin: "http://localhost:5173", credentials: false }));
+app.use(cors({ origin: "http://localhost:5173" }));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
@@ -43,12 +43,18 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// ===========================
+// ==============================
 // 🔗 MongoDB Initialization
-// ===========================
+// ==============================
 mongoose
   .connect(MONGO_URI, { dbName: "authDB" })
-  .then(() => console.log("✅ MongoDB connected"))
+  .then(async () => {
+    console.log("✅ MongoDB connected");
+
+    // Reset all online users to offline on server start
+    await User.updateMany({ status: "Online" }, { status: "Offline" });
+    console.log("🔄 All online users set to Offline");
+  })
   .catch((err) => console.error("❌ MongoDB error:", err));
 
 // ======================
@@ -63,8 +69,12 @@ const userSchema = new mongoose.Schema({
   profilePicture: { type: String, default: "" },
   status: {
     type: String,
-    enum: ["Active", "Offline", "Pending"],
+    enum: ["Online", "Offline", "Pending"],
     default: "Offline",
+  },
+  lastActiveAt: {
+    type: Date,
+    default: Date.now,
   },
 });
 const User = mongoose.model("User", userSchema);
@@ -77,6 +87,20 @@ const postSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 });
 const Post = mongoose.model("Post", postSchema);
+
+// Helper function to determine online status
+function getOnlineStatus(lastActiveAt) {
+  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+  return lastActiveAt > fiveMinutesAgo ? "Online" : "Offline";
+}
+
+// Reusable middleware to update last active time
+async function updateLastActive(userId) {
+  await User.findByIdAndUpdate(userId, {
+    lastActiveAt: Date.now(),
+    status: "Online",
+  });
+}
 
 // =======================
 // 🔐 JWT Middleware
@@ -100,81 +124,6 @@ const requireAdmin = (req, res, next) => {
   }
   next();
 };
-
-// ========================
-// 📮 Post Creation (Admin)
-// ========================
-app.post(
-  "/api/posts",
-  authenticate,
-  requireAdmin,
-  upload.single("image"),
-  async (req, res) => {
-    try {
-      const { title, content } = req.body;
-      const imagePath = req.file ? `/uploads/${req.file.filename}` : "";
-
-      const newPost = new Post({
-        title,
-        content,
-        image: imagePath,
-        createdBy: req.user.id,
-      });
-
-      await newPost.save();
-      res.status(201).json({ message: "Post created", post: newPost });
-    } catch (err) {
-      res.status(500).json({ message: "Post creation error", error: err.message });
-    }
-  }
-);
-
-// ==============================
-// 🧹 Remove Post Image (Admin)
-// ==============================
-app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
-
-    if (post.image) {
-      const filePath = path.join(__dirname, post.image);
-      fs.unlink(filePath, (err) => {
-        if (err) console.warn("⚠️ Could not delete image file:", err.message);
-        else console.log("🗑️ Image file removed:", filePath);
-      });
-    }
-
-    post.image = "";
-    await post.save();
-
-    res.json({ message: "✅ Image removed successfully", post });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to remove image", error: err.message });
-  }
-});
-
-// ========================
-// 📰 Public Post Endpoints
-// ========================
-app.get("/api/posts", async (req, res) => {
-  try {
-    const posts = await Post.find().sort({ createdAt: -1 });
-    res.json(posts);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch posts", error: err.message });
-  }
-});
-
-app.get("/api/posts/:id", async (req, res) => {
-  try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
-    res.json(post);
-  } catch (err) {
-    res.status(500).json({ message: "Error fetching post", error: err.message });
-  }
-});
 
 // ==========================
 // 👤 User Registration/Login
@@ -207,7 +156,7 @@ app.post("/api/login", async (req, res) => {
     const user = await User.findOne({ email, password }); // ⚠️ bcrypt recommended
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
-    await User.findByIdAndUpdate(user._id, { status: "Active" });
+    await updateLastActive(user._id); // Set as Online
 
     const token = jwt.sign(
       {
@@ -230,32 +179,41 @@ app.post("/api/login", async (req, res) => {
 
 app.post("/api/logout", authenticate, async (req, res) => {
   try {
-    await User.findByIdAndUpdate(req.user.id, { status: "Offline" });
+    await User.findByIdAndUpdate(req.user.id, {
+      status: "Offline",
+      lastActiveAt: Date.now(),
+    });
     res.json({ message: "Logged out" });
   } catch (err) {
     res.status(403).json({ message: "Invalid token", error: err.message });
   }
 });
 
-app.get("/api/profile", authenticate, (req, res) => {
-  res.json({ user: req.user });
+app.get("/api/profile", authenticate, async (req, res) => {
+  try {
+    await updateLastActive(req.user.id); // Update last activity
+    res.json({ user: req.user });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch profile", error: err.message });
+  }
 });
 
 // ==========================
-// 🛠️ Admin User Management
+// 👥 User Management (auth only)
 // ==========================
-app.get("/api/users", authenticate, requireAdmin, async (req, res) => {
+app.get("/api/users", authenticate, async (req, res) => {
   try {
     const users = await User.find().select("-password");
 
-    const enrichedUsers = users.map(user => ({
+    const enrichedUsers = users.map((user) => ({
       _id: user._id,
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
       role: user.role,
       profilePicture: user.profilePicture,
-      status: user.status || "Offline", // ✅ Always provide status
+      status: getOnlineStatus(user.lastActiveAt),
+      lastActiveAt: user.lastActiveAt,
     }));
 
     res.json(enrichedUsers);
@@ -269,8 +227,12 @@ app.put("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
     const updates = { ...req.body };
     if (!updates.password || updates.password.trim() === "") delete updates.password;
 
-    const updatedUser = await User.findByIdAndUpdate(req.params.id, updates, { new: true }).select("-password");
-    if (!updatedUser) return res.status(404).json({ message: "User not found" });
+    const updatedUser = await User.findByIdAndUpdate(req.params.id, updates, {
+      new: true,
+    }).select("-password");
+
+    if (!updatedUser)
+      return res.status(404).json({ message: "User not found" });
 
     res.json({ message: "User updated", user: updatedUser });
   } catch (err) {
@@ -281,17 +243,55 @@ app.put("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
 app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const deletedUser = await User.findByIdAndDelete(req.params.id);
-    if (!deletedUser) return res.status(404).json({ message: "User not found" });
-
+    if (!deletedUser)
+      return res.status(404).json({ message: "User not found" });
     res.json({ message: "User deleted", userId: req.params.id });
   } catch (err) {
     res.status(500).json({ message: "Delete failed", error: err.message });
   }
 });
 
-// ==============================
-// 📝 Update Existing Post (Admin)
-// ==============================
+// ==========================
+// 📮 Post Management (Admin)
+// ==========================
+app.post("/api/posts", authenticate, requireAdmin, upload.single("image"), async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : "";
+
+    const newPost = new Post({
+      title,
+      content,
+      image: imagePath,
+      createdBy: req.user.id,
+    });
+
+    await newPost.save();
+    res.status(201).json({ message: "Post created", post: newPost });
+  } catch (err) {
+    res.status(500).json({ message: "Post creation error", error: err.message });
+  }
+});
+
+app.get("/api/posts", async (req, res) => {
+  try {
+    const posts = await Post.find().sort({ createdAt: -1 });
+    res.json(posts);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch posts", error: err.message });
+  }
+});
+
+app.get("/api/posts/:id", async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+    res.json(post);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching post", error: err.message });
+  }
+});
+
 app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), async (req, res) => {
   try {
     const { title, content } = req.body;
@@ -320,9 +320,55 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
   }
 });
 
+app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    if (post.image) {
+      const filePath = path.join(__dirname, post.image);
+      fs.unlink(filePath, (err) => {
+        if (err) console.warn("⚠️ Could not delete image file:", err.message);
+      });
+    }
+
+    await Post.findByIdAndDelete(req.params.id);
+    res.json({ message: "✅ Post deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete post", error: err.message });
+  }
+});
+
+
+app.get("/api/users", authenticate, async (req, res) => {
+  try {
+    const users = await User.find().select("-password");
+
+    const enrichedUsers = users.map((user) => ({
+      _id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      role: user.role,
+      profilePicture: user.profilePicture,
+      lastActiveAt: user.lastActiveAt,
+    }));
+
+    res.json(enrichedUsers);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch users", error: err.message });
+  }
+});
+
+
+
+
+
+
+
 // ======================
 // 🟢 Server Activation
 // ======================
 app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
-})
+});
