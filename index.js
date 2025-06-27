@@ -61,7 +61,6 @@ const requestSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   message: { type: String, required: true, trim: true },
   submittedAt: { type: Date, default: Date.now },
-  read: { type: Boolean, default: false },  // <-- Added to track read status
 });
 const Request = mongoose.model("Request", requestSchema);
 
@@ -74,7 +73,7 @@ const postSchema = new mongoose.Schema({
 });
 const Post = mongoose.model("Post", postSchema);
 
-// Middleware for JWT
+// Middleware for JWT Authentication
 const authenticate = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Token missing" });
@@ -88,6 +87,7 @@ const authenticate = (req, res, next) => {
   }
 };
 
+// Middleware to require admin role
 const requireAdmin = (req, res, next) => {
   if (req.user.role !== "admin") return res.status(403).json({ message: "Admins only" });
   next();
@@ -313,6 +313,7 @@ app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
 
 // ========== REQUEST ROUTES ==========
 
+// Submit a new request (user)
 app.post("/api/request", authenticate, async (req, res) => {
   try {
     const { title, message } = req.body;
@@ -324,7 +325,6 @@ app.post("/api/request", authenticate, async (req, res) => {
       userId: req.user.id,
       title,
       message,
-      read: false, // default on new request
     });
 
     await newRequest.save();
@@ -334,6 +334,7 @@ app.post("/api/request", authenticate, async (req, res) => {
   }
 });
 
+// Admin: get all requests with user info
 app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
   try {
     const requests = await Request.find()
@@ -345,36 +346,7 @@ app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// New: Get unread requests count
-app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const unreadCount = await Request.countDocuments({ read: false });
-    res.json({ unreadCount });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch unread count", error: err.message });
-  }
-});
-
-// New: Mark request as read
-app.put("/api/requests/:id/mark-read", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const requestId = req.params.id;
-    const updatedRequest = await Request.findByIdAndUpdate(
-      requestId,
-      { read: true },
-      { new: true }
-    );
-
-    if (!updatedRequest) return res.status(404).json({ message: "Request not found" });
-
-    res.json({ message: "Request marked as read", request: updatedRequest });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to mark read", error: err.message });
-  }
-});
-
-// ========== DELETE POST ROUTE ==========
-
+// Delete a post by ID (admin only)
 app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -393,7 +365,21 @@ app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: "Failed to delete post", error: err.message });
   }
-});
+})
+
+
+
+
+
+
+
+
+
+
+
+
+
+;
 
 // Start server
 app.listen(PORT, () => {
