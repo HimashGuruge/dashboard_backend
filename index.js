@@ -6,16 +6,26 @@ import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
+import http from 'http'; 
+import { Server as SocketIOServer } from 'socket.io'; 
 
 // ESM __dirname fix
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const server = http.createServer(app); 
 const PORT = 3000;
 const JWT_SECRET = "super-secret-key";
 const MONGO_URI =
   "mongodb+srv://123:123@cluster0.muiyvkn.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+
+const io = new SocketIOServer(server, { 
+    cors: {
+        origin: "http://localhost:5173", 
+        methods: ["GET", "POST"]
+    }
+});
 
 // Ensure uploads folder exists
 const uploadsDir = path.join(__dirname, "uploads");
@@ -61,7 +71,7 @@ const requestSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   message: { type: String, required: true, trim: true },
   submittedAt: { type: Date, default: Date.now },
-  read: { type: Boolean, default: false }, // Track read status
+  read: { type: Boolean, default: false },
 });
 const Request = mongoose.model("Request", requestSchema);
 
@@ -71,10 +81,12 @@ const postSchema = new mongoose.Schema({
   image: { type: String, default: "" },
   createdAt: { type: Date, default: Date.now },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  likes: { type: Number, default: 0 },
+  likedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
 });
 const Post = mongoose.model("Post", postSchema);
 
-// Middleware for JWT Authentication
+// JWT Authentication middleware
 const authenticate = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Token missing" });
@@ -88,7 +100,22 @@ const authenticate = (req, res, next) => {
   }
 };
 
-// Middleware to require admin role
+// Optional JWT decode middleware - does NOT block if token missing or invalid
+const authenticateOptional = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.split(" ")[1];
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.user = decoded; // Attach user info if token valid
+    } catch {
+      // Invalid token - ignore and continue
+    }
+  }
+  next();
+};
+
+// Admin role middleware
 const requireAdmin = (req, res, next) => {
   if (req.user.role !== "admin") return res.status(403).json({ message: "Admins only" });
   next();
@@ -118,10 +145,14 @@ app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
   }
 });
 
+// 🚀 FIX: This is the ONLY /api/login endpoint.
 app.post("/api/login", async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email, password });
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required." });
+    }
+    const user = await User.findOne({ email, password }); 
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
     await User.findByIdAndUpdate(user._id, { status: "Active" });
@@ -141,6 +172,7 @@ app.post("/api/login", async (req, res) => {
 
     res.json({ token });
   } catch (err) {
+    console.error("Login error:", err); 
     res.status(500).json({ message: "Login error", error: err.message });
   }
 });
@@ -148,10 +180,27 @@ app.post("/api/login", async (req, res) => {
 app.post("/api/logout", authenticate, async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.user.id, { status: "Offline" });
+    // 🚀 NEW: Emit a Socket.IO event when a user logs out
+    io.emit('userLoggedOut', { userId: req.user.id }); 
     res.json({ message: "Logged out" });
   } catch (err) {
     res.status(500).json({ message: "Logout error", error: err.message });
   }
+});
+
+// 🚀 NEW: Endpoint to check if email exists (used by RegisterForm.jsx)
+app.get("/api/check-email", async (req, res) => {
+    try {
+        const email = req.query.email;
+        if (!email) {
+            return res.status(400).json({ message: "Email query parameter is required." });
+        }
+        const user = await User.findOne({ email });
+        res.json({ exists: !!user }); 
+    } catch (error) {
+        console.error("Error checking email:", error);
+        res.status(500).json({ message: "Server error during email check." });
+    }
 });
 
 // ========== PROFILE ROUTES ==========
@@ -192,21 +241,38 @@ app.put("/api/profile", authenticate, upload.single("profilePicture"), async (re
 
 // ========== POST ROUTES ==========
 
-app.get("/api/posts", async (req, res) => {
+app.get("/api/posts", authenticateOptional, async (req, res) => {
   try {
-    const posts = await Post.find().sort({ createdAt: -1 });
+    const posts = await Post.find().populate('createdBy', 'firstName lastName profilePicture').sort({ createdAt: -1 }).lean(); 
+
+    const userId = req.user?.id;
+
+    if (userId) {
+      posts.forEach((post) => {
+        post.likedByCurrentUser = post.likedBy.some(
+          (id) => id.toString() === userId
+        );
+      });
+    } else {
+      posts.forEach((post) => {
+        post.likedByCurrentUser = false;
+      });
+    }
+
     res.json(posts);
   } catch (err) {
+    console.error("Error fetching posts:", err); 
     res.status(500).json({ message: "Failed to fetch posts", error: err.message });
   }
 });
 
 app.get("/api/posts/:id", async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id);
+    const post = await Post.findById(req.params.id).populate('createdBy', 'firstName lastName profilePicture'); 
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post);
   } catch (err) {
+    console.error("Error fetching single post:", err); 
     res.status(500).json({ message: "Error fetching post", error: err.message });
   }
 });
@@ -224,8 +290,11 @@ app.post("/api/posts", authenticate, requireAdmin, upload.single("image"), async
     });
 
     await newPost.save();
-    res.status(201).json({ message: "Post created", post: newPost });
+    const populatedPost = await newPost.populate('createdBy', 'firstName lastName profilePicture');
+    io.emit('newPost', populatedPost); 
+    res.status(201).json({ message: "Post created", post: populatedPost });
   } catch (err) {
+    console.error("Post creation error:", err); 
     res.status(500).json({ message: "Post creation error", error: err.message });
   }
 });
@@ -239,19 +308,26 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
     if (req.file) {
       if (post.image) {
         const oldImagePath = path.join(__dirname, post.image);
-        fs.unlink(oldImagePath, (err) => {
-          if (err) console.error("Failed to delete old image:", err);
-        });
+        await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old image:", err));
       }
       post.image = `/uploads/${req.file.filename}`;
+    } else if (req.body.removeImage === 'true') { 
+        if (post.image) {
+            const oldImagePath = path.join(__dirname, post.image);
+            await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old image:", err));
+        }
+        post.image = "";
     }
 
     post.title = title || post.title;
     post.content = content || post.content;
 
     await post.save();
-    res.json({ message: "Post updated", post });
+    const populatedPost = await post.populate('createdBy', 'firstName lastName profilePicture');
+    io.emit('postUpdated', populatedPost); 
+    res.json({ message: "Post updated", post: populatedPost });
   } catch (err) {
+    console.error("Update failed:", err); 
     res.status(500).json({ message: "Update failed", error: err.message });
   }
 });
@@ -263,204 +339,227 @@ app.delete("/api/posts/:id/image", authenticate, requireAdmin, async (req, res) 
 
     if (post.image) {
       const filePath = path.join(__dirname, post.image);
-      fs.unlink(filePath, (err) => {
-        if (err) console.error("Failed to delete post image:", err);
-      });
+      await fs.promises.unlink(filePath).catch(err => console.error("Failed to delete post image:", err));
       post.image = "";
       await post.save();
+      const populatedPost = await post.populate('createdBy', 'firstName lastName profilePicture');
+      io.emit('postUpdated', populatedPost);
     }
 
     res.json({ message: "Image removed", post });
   } catch (err) {
+    console.error("Failed to remove image:", err); 
     res.status(500).json({ message: "Failed to remove image", error: err.message });
   }
 });
 
-// ========== USER ROUTES (ADMIN ONLY) ==========
 
-app.get("/api/users", authenticate, requireAdmin, async (req, res) => {
+// Like a post
+app.post("/api/posts/:id/like", authenticate, async (req, res) => {
   try {
-    const users = await User.find({}, "firstName lastName email status").exec();
+    const postId = req.params.id;
+    const userId = req.user.id;
+
+    const post = await Post.findById(postId);
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    const alreadyLiked = post.likedBy.some(id => id.toString() === userId);
+
+    if (alreadyLiked) {
+      post.likes -= 1;
+      post.likedBy = post.likedBy.filter(id => id.toString() !== userId);
+    } else {
+      post.likes += 1;
+      post.likedBy.push(userId);
+    }
+
+    await post.save();
+
+    const updatedPost = await Post.findById(post._id).populate('likedBy', 'firstName lastName profilePicture');
+    io.emit('postUpdated', {
+        _id: updatedPost._id,
+        likes: updatedPost.likes,
+        likedBy: updatedPost.likedBy,
+        likedByCurrentUser: !alreadyLiked 
+    });
+    
+    res.json({ 
+      likes: post.likes, 
+      likedByCurrentUser: !alreadyLiked 
+    });
+  } catch (err) {
+    console.error("Like action failed:", err); 
+    res.status(500).json({ message: "Like action failed", error: err.message });
+  }
+});
+
+// Get likes for a post
+app.get("/api/posts/:id/likes", authenticateOptional, async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id).populate('likedBy', 'firstName lastName profilePicture');
+    if (!post) return res.status(404).json({ message: "Post not found" });
+
+    const likedByCurrentUser = req.user ? 
+      post.likedBy.some(user => user._id.toString() === req.user.id) : 
+      false;
+
+    res.json({
+      count: post.likes,
+      likedByCurrentUser,
+      users: post.likedBy
+    });
+  } catch (err) {
+    console.error("Failed to get likes:", err); 
+    res.status(500).json({ message: "Failed to get likes", error: err.message });
+  }
+});
+
+// ========== User Management Endpoints (Admin) ==========
+
+app.get("/api/users", authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: "Access Denied: Admins only." });
+    }
+    const users = await User.find().select('-password'); 
     res.json(users);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch users", error: err.message });
+    console.error("Error fetching users:", err);
+    res.status(500).json({ message: "Failed to fetch users.", error: err.message });
   }
 });
 
 app.put("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   try {
-    const updates = { ...req.body };
-    if (!updates.password || updates.password.trim() === "") delete updates.password;
+    const { firstName, lastName, email, role, password } = req.body;
+    const updates = { firstName, lastName, email, role };
 
-    const updatedUser = await User.findByIdAndUpdate(req.params.id, updates, { new: true }).select("-password");
-    if (!updatedUser) return res.status(404).json({ message: "User not found" });
+    if (password) {
+      updates.password = password; 
+    }
 
-    res.json({ message: "User updated", user: updatedUser });
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.id,
+      updates,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    res.json({ message: "User updated successfully", user: updatedUser });
   } catch (err) {
-    res.status(500).json({ message: "Update failed", error: err.message });
+    console.error("Error updating user:", err);
+    res.status(500).json({ message: "Failed to update user.", error: err.message });
   }
 });
 
 app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const deletedUser = await User.findByIdAndDelete(req.params.id);
-    if (!deletedUser) return res.status(404).json({ message: "User not found" });
-
-    res.json({ message: "User deleted", userId: req.params.id });
-  } catch (err) {
-    res.status(500).json({ message: "Delete failed", error: err.message });
-  }
-});
-
-// ========== REQUEST ROUTES ==========
-
-// Submit a new request (user)
-app.post("/api/request", authenticate, async (req, res) => {
-  try {
-    const { title, message } = req.body;
-    if (!title || !message) {
-      return res.status(400).json({ message: "Title and message are required" });
+    if (!deletedUser) {
+      return res.status(404).json({ message: "User not found." });
     }
-
-    const newRequest = new Request({
-      userId: req.user.id,
-      title,
-      message,
-      read: false, // default unread
-    });
-
-    await newRequest.save();
-    res.status(201).json({ message: "Request submitted" });
+    res.json({ message: "User deleted successfully" });
   } catch (err) {
-    res.status(500).json({ message: "Failed to submit request", error: err.message });
+    console.error("Error deleting user:", err);
+    res.status(500).json({ message: "Failed to delete user.", error: err.message });
   }
 });
 
-// Admin: get all requests with user info
+
+// ========== Request/Mail Endpoints ==========
 app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const requests = await Request.find()
-      .sort({ submittedAt: -1 })
-      .populate("userId", "firstName lastName email");
-    res.json(requests);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch requests", error: err.message });
-  }
-});
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
 
-// User: get their own requests only
-app.get("/api/myrequests", authenticate, async (req, res) => {
-  try {
-    const myRequests = await Request.find({ userId: req.user.id }).sort({ submittedAt: -1 });
-    res.json(myRequests);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch your requests", error: err.message });
-  }
-});
+        const totalRequests = await Request.countDocuments();
+        const totalPages = Math.ceil(totalRequests / limit);
 
-// Get unread requests count (admin)
-//app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
-  app.get("/api/requests/unread-count", authenticate, async (req, res) => {
-  try {
-    const unreadCount = await Request.countDocuments({ read: false });
-    res.json({ unreadCount });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch unread count", error: err.message });
-  }
-});
+        const requests = await Request.find()
+            .populate('userId', 'firstName lastName email') 
+            .sort({ submittedAt: -1 })
+            .skip(skip)
+            .limit(limit);
 
-// Mark a request as read (owner or admin)
-app.put("/api/requests/:id/mark-read", authenticate, async (req, res) => {
-  try {
-    const requestId = req.params.id;
-    const request = await Request.findById(requestId);
-    if (!request) return res.status(404).json({ message: "Request not found" });
-
-    // Only owner or admin can mark as read
-    if (request.userId.toString() !== req.user.id && req.user.role !== "admin") {
-      return res.status(403).json({ message: "Not authorized" });
+        res.json({ mails: requests, totalPages, currentPage: page });
+    } catch (err) {
+        console.error("Error fetching requests:", err);
+        res.status(500).json({ message: "Failed to fetch requests.", error: err.message });
     }
-
-    request.read = true;
-    await request.save();
-
-    res.json({ message: "Request marked as read", request });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to mark as read", error: err.message });
-  }
 });
 
-// ========== DELETE POST ROUTE ==========
-
-app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
-
-    // Delete image file from disk if exists
-    if (post.image) {
-      const imagePath = path.join(uploadsDir, path.basename(post.image));
-      fs.unlink(imagePath, (err) => {
-        if (err) console.error("Failed to delete post image:", err);
-      });
+app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
+    try {
+        const unreadCount = await Request.countDocuments({ read: false });
+        res.json({ unreadCount });
+    } catch (err) {
+        console.error("Error fetching unread count:", err);
+        res.status(500).json({ message: "Failed to fetch unread count.", error: err.message });
     }
+});
 
-    await post.deleteOne();
-    res.json({ message: "Post deleted successfully" });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to delete post", error: err.message });
-  }
-})
-
-
-
-
-
-
-// DELETE a request/mail by ID - only admin or owner can delete
-app.delete("/api/requests/:id", authenticate, async (req, res) => {
-  try {
-    const requestId = req.params.id;
-    const request = await Request.findById(requestId);
-    if (!request) return res.status(404).json({ message: "Request not found" });
-
-    // Only admin or the user who created the request can delete it
-    if (request.userId.toString() !== req.user.id && req.user.role !== "admin") {
-      return res.status(403).json({ message: "Not authorized to delete this request" });
+app.put("/api/requests/:id/mark-read", authenticate, requireAdmin, async (req, res) => {
+    try {
+        const request = await Request.findByIdAndUpdate(req.params.id, { read: true }, { new: true });
+        if (!request) {
+            return res.status(404).json({ message: "Request not found." });
+        }
+        res.json({ message: "Request marked as read", request });
+    } catch (err) {
+        console.error("Error marking request as read:", err);
+        res.status(500).json({ message: "Failed to mark request as read.", error: err.message });
     }
+});
 
-    await request.deleteOne();
+app.delete("/api/requests/:id", authenticate, requireAdmin, async (req, res) => {
+    try {
+        const deletedRequest = await Request.findByIdAndDelete(req.params.id);
+        if (!deletedRequest) {
+            return res.status(404).json({ message: "Request not found." });
+        }
+        res.json({ message: "Request deleted successfully" });
+    } catch (err) {
+        console.error("Error deleting request:", err);
+        res.status(500).json({ message: "Failed to delete request.", error: err.message });
+    }
+});
 
-    res.json({ message: "Request deleted successfully" });
-  } catch (err) {
-    console.error("Error deleting request:", err);
-    res.status(500).json({ message: "Failed to delete request", error: err.message });
-  }
+app.post("/api/request", authenticate, async (req, res) => {
+    try {
+        const { title, message } = req.body;
+        const userId = req.user.id; 
+
+        const newRequest = new Request({
+            userId,
+            title,
+            message,
+        });
+
+        await newRequest.save();
+        res.status(201).json({ message: "Request submitted successfully!", request: newRequest });
+    } catch (err) {
+        console.error("Error submitting request:", err);
+        res.status(500).json({ message: "Failed to submit request.", error: err.message });
+    }
 });
 
 
+// Socket.IO connection event
+io.on('connection', (socket) => {
+    console.log(`User connected with socket ID: ${socket.id} 🤝`);
+
+    socket.on('disconnect', () => {
+        console.log(`User disconnected: ${socket.id} 🚪`);
+    });
+});
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-;
-
-// Start server
-app.listen(PORT, () => {
+// Start the HTTP server, not the Express app
+server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
+  console.log(`⚡️ Socket.IO is ready for real-time connections!`);
 });
+
