@@ -359,7 +359,8 @@ app.get("/api/myrequests", authenticate, async (req, res) => {
 });
 
 // Get unread requests count (admin)
-app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
+//app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
+  app.get("/api/requests/unread-count", authenticate, async (req, res) => {
   try {
     const unreadCount = await Request.countDocuments({ read: false });
     res.json({ unreadCount });
@@ -413,28 +414,6 @@ app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
 
 
 
-
-
-// PUT /api/requests/:id/mark-read
-app.put("/api/requests/:id/mark-read", authenticate, async (req, res) => {
-  try {
-    const requestId = req.params.id;
-    const request = await Request.findById(requestId);
-    if (!request) return res.status(404).json({ message: "Request not found" });
-
-    // Only owner (requester) or admin can mark as read
-    if (request.userId.toString() !== req.user.id && req.user.role !== "admin") {
-      return res.status(403).json({ message: "Not authorized" });
-    }
-
-    request.read = true;
-    await request.save();
-
-    res.json({ message: "Request marked as read", request });
-  } catch (err) {
-    res.status(500).json({ message: "Failed to mark as read", error: err.message });
-  }
-});
 
 
 
