@@ -417,6 +417,40 @@ app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
 
 
 
+// DELETE a request/mail by ID - only admin or owner can delete
+app.delete("/api/requests/:id", authenticate, async (req, res) => {
+  try {
+    const requestId = req.params.id;
+    const request = await Request.findById(requestId);
+    if (!request) return res.status(404).json({ message: "Request not found" });
+
+    // Only admin or the user who created the request can delete it
+    if (request.userId.toString() !== req.user.id && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorized to delete this request" });
+    }
+
+    await request.deleteOne();
+
+    res.json({ message: "Request deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting request:", err);
+    res.status(500).json({ message: "Failed to delete request", error: err.message });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
