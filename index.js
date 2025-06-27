@@ -40,8 +40,8 @@ app.use("/uploads", express.static(uploadsDir));
 
 // Multer setup
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
+  destination: (_req, _file, cb) => cb(null, uploadsDir),
+  filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
     cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
   },
@@ -71,10 +71,7 @@ const requestSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   message: { type: String, required: true, trim: true },
   submittedAt: { type: Date, default: Date.now },
-<<<<<<< HEAD
-=======
   read: { type: Boolean, default: false },
->>>>>>> test
 });
 const Request = mongoose.model("Request", requestSchema);
 
@@ -104,7 +101,7 @@ const authenticate = (req, res, next) => {
 };
 
 // Optional JWT decode middleware - does NOT block if token missing or invalid
-const authenticateOptional = (req, res, next) => {
+const authenticateOptional = (req, _res, next) => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.split(" ")[1];
@@ -144,11 +141,11 @@ app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
     await newUser.save();
     res.status(201).json({ message: "User registered" });
   } catch (err) {
+    console.error("Registration error:", err); // Added error logging
     res.status(500).json({ message: "Registration error", error: err.message });
   }
 });
 
-// 🚀 FIX: This is the ONLY /api/login endpoint.
 app.post("/api/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -183,15 +180,14 @@ app.post("/api/login", async (req, res) => {
 app.post("/api/logout", authenticate, async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.user.id, { status: "Offline" });
-    // 🚀 NEW: Emit a Socket.IO event when a user logs out
     io.emit('userLoggedOut', { userId: req.user.id }); 
     res.json({ message: "Logged out" });
   } catch (err) {
+    console.error("Logout error:", err); // Added error logging
     res.status(500).json({ message: "Logout error", error: err.message });
   }
 });
 
-// 🚀 NEW: Endpoint to check if email exists (used by RegisterForm.jsx)
 app.get("/api/check-email", async (req, res) => {
     try {
         const email = req.query.email;
@@ -214,6 +210,7 @@ app.get("/api/profile", authenticate, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json({ user });
   } catch (err) {
+    console.error("Error fetching profile:", err); // Added error logging
     res.status(500).json({ message: "Fetch failed", error: err.message });
   }
 });
@@ -238,6 +235,7 @@ app.put("/api/profile", authenticate, upload.single("profilePicture"), async (re
     if (!updatedUser) return res.status(404).json({ message: "User not found" });
     res.json({ message: "Profile updated", user: updatedUser });
   } catch (err) {
+    console.error("Error updating profile:", err); // Added error logging
     res.status(500).json({ message: "Update failed", error: err.message });
   }
 });
@@ -335,29 +333,28 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
   }
 });
 
-app.delete("/api/posts/:id/image", authenticate, requireAdmin, async (req, res) => {
+// 🚀 NEW: Delete a post by ID (admin only) - Added as requested implicitly from previous code structure
+app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
     if (!post) return res.status(404).json({ message: "Post not found" });
 
+    // Delete image file from disk if exists
     if (post.image) {
-      const filePath = path.join(__dirname, post.image);
-      await fs.promises.unlink(filePath).catch(err => console.error("Failed to delete post image:", err));
-      post.image = "";
-      await post.save();
-      const populatedPost = await post.populate('createdBy', 'firstName lastName profilePicture');
-      io.emit('postUpdated', populatedPost);
+      const imagePath = path.join(uploadsDir, path.basename(post.image));
+      await fs.promises.unlink(imagePath).catch(err => console.error("Failed to delete post image:", err)); // Using fs.promises.unlink
     }
 
-    res.json({ message: "Image removed", post });
+    await Post.findByIdAndDelete(req.params.id);
+    io.emit('postDeleted', { postId: req.params.id }); // 🚀 NEW: Emit post deleted event
+    res.json({ message: "Post deleted successfully" });
   } catch (err) {
-    console.error("Failed to remove image:", err); 
-    res.status(500).json({ message: "Failed to remove image", error: err.message });
+    console.error("Error deleting post:", err);
+    res.status(500).json({ message: "Failed to delete post.", error: err.message });
   }
 });
 
 
-// Like a post
 app.post("/api/posts/:id/like", authenticate, async (req, res) => {
   try {
     const postId = req.params.id;
@@ -396,7 +393,6 @@ app.post("/api/posts/:id/like", authenticate, async (req, res) => {
   }
 });
 
-// Get likes for a post
 app.get("/api/posts/:id/likes", authenticateOptional, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id).populate('likedBy', 'firstName lastName profilePicture');
@@ -463,19 +459,7 @@ app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
     if (!deletedUser) {
       return res.status(404).json({ message: "User not found." });
     }
-<<<<<<< HEAD
-
-    const newRequest = new Request({
-      userId: req.user.id,
-      title,
-      message,
-    });
-
-    await newRequest.save();
-    res.status(201).json({ message: "Request submitted" });
-=======
     res.json({ message: "User deleted successfully" });
->>>>>>> test
   } catch (err) {
     console.error("Error deleting user:", err);
     res.status(500).json({ message: "Failed to delete user.", error: err.message });
@@ -485,30 +469,6 @@ app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
 
 // ========== Request/Mail Endpoints ==========
 app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
-<<<<<<< HEAD
-  try {
-    const requests = await Request.find()
-      .sort({ submittedAt: -1 }) // Sort newest first
-      .populate("userId", "firstName lastName email"); // Populate user info
-    res.json(requests);
-  } catch (err) {
-    res.status(500).json({ message: "Failed to fetch requests", error: err.message });
-  }
-});
-
-// Delete a post by ID (admin only)
-app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
-  try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
-
-    // Delete image file from disk if exists
-    if (post.image) {
-      const imagePath = path.join(uploadsDir, path.basename(post.image));
-      fs.unlink(imagePath, (err) => {
-        if (err) console.error("Failed to delete post image:", err);
-      });
-=======
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
@@ -537,7 +497,6 @@ app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, re
     } catch (err) {
         console.error("Error fetching unread count:", err);
         res.status(500).json({ message: "Failed to fetch unread count.", error: err.message });
->>>>>>> test
     }
 });
 
