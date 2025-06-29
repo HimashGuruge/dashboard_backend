@@ -6,23 +6,23 @@ import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import http from 'http'; 
-import { Server as SocketIOServer } from 'socket.io'; 
+import http from 'http';
+import { Server as SocketIOServer } from 'socket.io';
 
 // ESM __dirname fix
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const server = http.createServer(app); 
+const server = http.createServer(app);
 const PORT = 3000;
 const JWT_SECRET = "super-secret-key";
 const MONGO_URI =
   "mongodb+srv://123:123@cluster0.muiyvkn.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 
-const io = new SocketIOServer(server, { 
+const io = new SocketIOServer(server, {
     cors: {
-        origin: "http://localhost:5173", 
+        origin: "http://localhost:5173",
         methods: ["GET", "POST"]
     }
 });
@@ -152,7 +152,7 @@ app.post("/api/login", async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ message: "Email and password are required." });
     }
-    const user = await User.findOne({ email, password }); 
+    const user = await User.findOne({ email, password });
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
     await User.findByIdAndUpdate(user._id, { status: "Active" });
@@ -172,7 +172,7 @@ app.post("/api/login", async (req, res) => {
 
     res.json({ token });
   } catch (err) {
-    console.error("Login error:", err); 
+    console.error("Login error:", err);
     res.status(500).json({ message: "Login error", error: err.message });
   }
 });
@@ -180,7 +180,7 @@ app.post("/api/login", async (req, res) => {
 app.post("/api/logout", authenticate, async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.user.id, { status: "Offline" });
-    io.emit('userLoggedOut', { userId: req.user.id }); 
+    io.emit('userLoggedOut', { userId: req.user.id });
     res.json({ message: "Logged out" });
   } catch (err) {
     console.error("Logout error:", err); // Added error logging
@@ -195,7 +195,7 @@ app.get("/api/check-email", async (req, res) => {
             return res.status(400).json({ message: "Email query parameter is required." });
         }
         const user = await User.findOne({ email });
-        res.json({ exists: !!user }); 
+        res.json({ exists: !!user });
     } catch (error) {
         console.error("Error checking email:", error);
         res.status(500).json({ message: "Server error during email check." });
@@ -244,7 +244,7 @@ app.put("/api/profile", authenticate, upload.single("profilePicture"), async (re
 
 app.get("/api/posts", authenticateOptional, async (req, res) => {
   try {
-    const posts = await Post.find().populate('createdBy', 'firstName lastName profilePicture').sort({ createdAt: -1 }).lean(); 
+    const posts = await Post.find().populate('createdBy', 'firstName lastName profilePicture').sort({ createdAt: -1 }).lean();
 
     const userId = req.user?.id;
 
@@ -262,18 +262,18 @@ app.get("/api/posts", authenticateOptional, async (req, res) => {
 
     res.json(posts);
   } catch (err) {
-    console.error("Error fetching posts:", err); 
+    console.error("Error fetching posts:", err);
     res.status(500).json({ message: "Failed to fetch posts", error: err.message });
   }
 });
 
 app.get("/api/posts/:id", async (req, res) => {
   try {
-    const post = await Post.findById(req.params.id).populate('createdBy', 'firstName lastName profilePicture'); 
+    const post = await Post.findById(req.params.id).populate('createdBy', 'firstName lastName profilePicture');
     if (!post) return res.status(404).json({ message: "Post not found" });
     res.json(post);
   } catch (err) {
-    console.error("Error fetching single post:", err); 
+    console.error("Error fetching single post:", err);
     res.status(500).json({ message: "Error fetching post", error: err.message });
   }
 });
@@ -292,10 +292,10 @@ app.post("/api/posts", authenticate, requireAdmin, upload.single("image"), async
 
     await newPost.save();
     const populatedPost = await newPost.populate('createdBy', 'firstName lastName profilePicture');
-    io.emit('newPost', populatedPost); 
+    io.emit('newPost', populatedPost);
     res.status(201).json({ message: "Post created", post: populatedPost });
   } catch (err) {
-    console.error("Post creation error:", err); 
+    console.error("Post creation error:", err);
     res.status(500).json({ message: "Post creation error", error: err.message });
   }
 });
@@ -312,7 +312,7 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
         await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old image:", err));
       }
       post.image = `/uploads/${req.file.filename}`;
-    } else if (req.body.removeImage === 'true') { 
+    } else if (req.body.removeImage === 'true') {
         if (post.image) {
             const oldImagePath = path.join(__dirname, post.image);
             await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old image:", err));
@@ -325,10 +325,10 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
 
     await post.save();
     const populatedPost = await post.populate('createdBy', 'firstName lastName profilePicture');
-    io.emit('postUpdated', populatedPost); 
+    io.emit('postUpdated', populatedPost);
     res.json({ message: "Post updated", post: populatedPost });
   } catch (err) {
-    console.error("Update failed:", err); 
+    console.error("Update failed:", err);
     res.status(500).json({ message: "Update failed", error: err.message });
   }
 });
@@ -380,15 +380,15 @@ app.post("/api/posts/:id/like", authenticate, async (req, res) => {
         _id: updatedPost._id,
         likes: updatedPost.likes,
         likedBy: updatedPost.likedBy,
-        likedByCurrentUser: !alreadyLiked 
+        likedByCurrentUser: !alreadyLiked
     });
-    
-    res.json({ 
-      likes: post.likes, 
-      likedByCurrentUser: !alreadyLiked 
+
+    res.json({
+      likes: post.likes,
+      likedByCurrentUser: !alreadyLiked
     });
   } catch (err) {
-    console.error("Like action failed:", err); 
+    console.error("Like action failed:", err);
     res.status(500).json({ message: "Like action failed", error: err.message });
   }
 });
@@ -398,8 +398,8 @@ app.get("/api/posts/:id/likes", authenticateOptional, async (req, res) => {
     const post = await Post.findById(req.params.id).populate('likedBy', 'firstName lastName profilePicture');
     if (!post) return res.status(404).json({ message: "Post not found" });
 
-    const likedByCurrentUser = req.user ? 
-      post.likedBy.some(user => user._id.toString() === req.user.id) : 
+    const likedByCurrentUser = req.user ?
+      post.likedBy.some(user => user._id.toString() === req.user.id) :
       false;
 
     res.json({
@@ -408,7 +408,7 @@ app.get("/api/posts/:id/likes", authenticateOptional, async (req, res) => {
       users: post.likedBy
     });
   } catch (err) {
-    console.error("Failed to get likes:", err); 
+    console.error("Failed to get likes:", err);
     res.status(500).json({ message: "Failed to get likes", error: err.message });
   }
 });
@@ -420,7 +420,7 @@ app.get("/api/users", authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
       return res.status(403).json({ message: "Access Denied: Admins only." });
     }
-    const users = await User.find().select('-password'); 
+    const users = await User.find().select('-password');
     res.json(users);
   } catch (err) {
     console.error("Error fetching users:", err);
@@ -434,7 +434,7 @@ app.put("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
     const updates = { firstName, lastName, email, role };
 
     if (password) {
-      updates.password = password; 
+      updates.password = password;
     }
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -478,7 +478,7 @@ app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
         const totalPages = Math.ceil(totalRequests / limit);
 
         const requests = await Request.find()
-            .populate('userId', 'firstName lastName email') 
+            .populate('userId', 'firstName lastName email')
             .sort({ submittedAt: -1 })
             .skip(skip)
             .limit(limit);
@@ -506,6 +506,7 @@ app.put("/api/requests/:id/mark-read", authenticate, requireAdmin, async (req, r
         if (!request) {
             return res.status(404).json({ message: "Request not found." });
         }
+        io.emit('mailRead', { requestId: request._id }); // ✅ NEW: Emit event when mail is marked read
         res.json({ message: "Request marked as read", request });
     } catch (err) {
         console.error("Error marking request as read:", err);
@@ -529,7 +530,7 @@ app.delete("/api/requests/:id", authenticate, requireAdmin, async (req, res) => 
 app.post("/api/request", authenticate, async (req, res) => {
     try {
         const { title, message } = req.body;
-        const userId = req.user.id; 
+        const userId = req.user.id;
 
         const newRequest = new Request({
             userId,
@@ -538,6 +539,10 @@ app.post("/api/request", authenticate, async (req, res) => {
         });
 
         await newRequest.save();
+        // ✅ MODIFIED: Populate the newRequest before emitting
+        const populatedRequest = await newRequest.populate('userId', 'email');
+        io.emit('newMailRequest', populatedRequest); // Emit populated request for real-time updates
+
         res.status(201).json({ message: "Request submitted successfully!", request: newRequest });
     } catch (err) {
         console.error("Error submitting request:", err);
@@ -554,35 +559,6 @@ io.on('connection', (socket) => {
         console.log(`User disconnected: ${socket.id} 🚪`);
     });
 });
-
-
-
-
-
-
-app.get("/api/request", authenticate, async (req, res) => {
-    try {
-        const requests = await Request.find().populate('userId', 'email'); // Fetch all requests and populate user email
-        res.json(requests);
-    } catch (err) {
-        console.error("Error fetching requests:", err);
-        res.status(500).json({ message: "Failed to fetch requests.", error: err.message });
-    }
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 // Start the HTTP server, not the Express app
