@@ -62,6 +62,7 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { type: String, default: "user" },
   profilePicture: { type: String, default: "" },
+  coverPhoto: { type: String, default: "" },
   status: { type: String, enum: ["Active", "Offline", "Pending"], default: "Offline" },
 });
 const User = mongoose.model("User", userSchema);
@@ -165,6 +166,7 @@ app.post("/api/login", async (req, res) => {
         firstName: user.firstName,
         lastName: user.lastName,
         profilePicture: user.profilePicture,
+        coverPhoto: user.coverPhoto,
       },
       JWT_SECRET,
       { expiresIn: "1h" }
@@ -215,30 +217,72 @@ app.get("/api/profile", authenticate, async (req, res) => {
   }
 });
 
-app.put("/api/profile", authenticate, upload.single("profilePicture"), async (req, res) => {
-  try {
-    const updates = {
-      firstName: req.body.firstName,
-      lastName: req.body.lastName,
-      email: req.body.email,
-    };
+app.put("/api/profile", authenticate, upload.fields([{ name: 'profilePicture', maxCount: 1 }, { name: 'coverPhoto', maxCount: 1 }]), async (req, res) => {
+    try {
+      const updates = {
+        firstName: req.body.firstName,
+        lastName: req.body.lastName,
+        email: req.body.email,
+      };
+  
+      if (req.body.password && req.body.password.trim()) { // Only update password if provided
+          updates.password = req.body.password;
+      }
 
-    if (req.file) {
-      updates.profilePicture = `/uploads/${req.file.filename}`;
+      if (req.files && req.files['profilePicture'] && req.files['profilePicture'][0]) {
+        updates.profilePicture = `/uploads/${req.files['profilePicture'][0].filename}`;
+      } else if (req.body.removeProfilePicture === 'true') { // Option to remove profile picture
+          const user = await User.findById(req.user.id);
+          if (user && user.profilePicture) {
+              const oldImagePath = path.join(__dirname, user.profilePicture);
+              await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old profile picture:", err));
+          }
+          updates.profilePicture = "";
+      }
+  
+      if (req.files && req.files['coverPhoto'] && req.files['coverPhoto'][0]) {
+        updates.coverPhoto = `/uploads/${req.files['coverPhoto'][0].filename}`;
+      } else if (req.body.removeCoverPhoto === 'true') { // Option to remove cover photo
+          const user = await User.findById(req.user.id);
+          if (user && user.coverPhoto) {
+              const oldImagePath = path.join(__dirname, user.coverPhoto);
+              await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old cover photo:", err));
+          }
+          updates.coverPhoto = "";
+      }
+  
+      const updatedUser = await User.findByIdAndUpdate(req.user.id, updates, {
+        new: true,
+        runValidators: true,
+      }).select("-password");
+  
+      if (!updatedUser) return res.status(404).json({ message: "User not found" });
+  
+      // Re-sign token with updated user data including coverPhoto
+      const token = jwt.sign(
+        {
+          id: updatedUser._id,
+          email: updatedUser.email,
+          role: updatedUser.role,
+          firstName: updatedUser.firstName,
+          lastName: updatedUser.lastName,
+          profilePicture: updatedUser.profilePicture,
+          coverPhoto: updatedUser.coverPhoto,
+        },
+        JWT_SECRET,
+        { expiresIn: "1h" }
+      );
+      
+      // ✅ NEW: Emit Socket.IO event for real-time update
+      io.emit('profileUpdated', updatedUser); 
+
+      res.json({ message: "Profile updated", user: updatedUser, token }); // Send new token to frontend
+    } catch (err) {
+      console.error("Error updating profile:", err);
+      res.status(500).json({ message: "Update failed", error: err.message });
     }
+  });
 
-    const updatedUser = await User.findByIdAndUpdate(req.user.id, updates, {
-      new: true,
-      runValidators: true,
-    }).select("-password");
-
-    if (!updatedUser) return res.status(404).json({ message: "User not found" });
-    res.json({ message: "Profile updated", user: updatedUser });
-  } catch (err) {
-    console.error("Error updating profile:", err); // Added error logging
-    res.status(500).json({ message: "Update failed", error: err.message });
-  }
-});
 
 // ========== POST ROUTES ==========
 
@@ -506,7 +550,7 @@ app.put("/api/requests/:id/mark-read", authenticate, requireAdmin, async (req, r
         if (!request) {
             return res.status(404).json({ message: "Request not found." });
         }
-        io.emit('mailRead', { requestId: request._id }); // ✅ NEW: Emit event when mail is marked read
+        io.emit('mailRead', { requestId: request._id });
         res.json({ message: "Request marked as read", request });
     } catch (err) {
         console.error("Error marking request as read:", err);
@@ -539,9 +583,8 @@ app.post("/api/request", authenticate, async (req, res) => {
         });
 
         await newRequest.save();
-        // ✅ MODIFIED: Populate the newRequest before emitting
         const populatedRequest = await newRequest.populate('userId', 'email');
-        io.emit('newMailRequest', populatedRequest); // Emit populated request for real-time updates
+        io.emit('newMailRequest', populatedRequest);
 
         res.status(201).json({ message: "Request submitted successfully!", request: newRequest });
     } catch (err) {
@@ -566,4 +609,3 @@ server.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
   console.log(`⚡️ Socket.IO is ready for real-time connections!`);
 });
-
