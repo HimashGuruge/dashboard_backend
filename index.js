@@ -23,7 +23,7 @@ const MONGO_URI =
 const io = new SocketIOServer(server, {
     cors: {
         origin: "http://localhost:5173",
-        methods: ["GET", "POST"]
+        methods: ["GET", "POST", "PUT", "DELETE"] // Allow PUT and DELETE methods
     }
 });
 
@@ -86,6 +86,16 @@ const postSchema = new mongoose.Schema({
   likedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
 });
 const Post = mongoose.model("Post", postSchema);
+
+// ✅ NEW: Comment Schema
+const commentSchema = new mongoose.Schema({
+  postId: { type: mongoose.Schema.Types.ObjectId, ref: "Post", required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  content: { type: String, required: true, trim: true },
+  createdAt: { type: Date, default: Date.now },
+});
+const Comment = mongoose.model("Comment", commentSchema);
+
 
 // JWT Authentication middleware
 const authenticate = (req, res, next) => {
@@ -273,7 +283,7 @@ app.put("/api/profile", authenticate, upload.fields([{ name: 'profilePicture', m
         { expiresIn: "1h" }
       );
       
-      // ✅ NEW: Emit Socket.IO event for real-time update
+      // Emit Socket.IO event for real-time update
       io.emit('profileUpdated', updatedUser); 
 
       res.json({ message: "Profile updated", user: updatedUser, token }); // Send new token to frontend
@@ -389,8 +399,12 @@ app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
       await fs.promises.unlink(imagePath).catch(err => console.error("Failed to delete post image:", err)); // Using fs.promises.unlink
     }
 
+    // ✅ NEW: Delete all comments associated with the post
+    await Comment.deleteMany({ postId: req.params.id });
+
     await Post.findByIdAndDelete(req.params.id);
     io.emit('postDeleted', { postId: req.params.id }); // 🚀 NEW: Emit post deleted event
+    io.emit('commentsDeletedForPost', { postId: req.params.id }); // ✅ NEW: Emit event for comments deleted
     res.json({ message: "Post deleted successfully" });
   } catch (err) {
     console.error("Error deleting post:", err);
@@ -424,7 +438,7 @@ app.post("/api/posts/:id/like", authenticate, async (req, res) => {
         _id: updatedPost._id,
         likes: updatedPost.likes,
         likedBy: updatedPost.likedBy,
-        likedByCurrentUser: !alreadyLiked
+        likedByCurrentUser: !alreadyLiked // Send the new likedByCurrentUser status
     });
 
     res.json({
@@ -456,6 +470,85 @@ app.get("/api/posts/:id/likes", authenticateOptional, async (req, res) => {
     res.status(500).json({ message: "Failed to get likes", error: err.message });
   }
 });
+
+// ========== COMMENT ROUTES ==========
+
+// ✅ NEW: Add a comment to a post
+app.post("/api/posts/:postId/comments", authenticate, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const { content } = req.body;
+    const userId = req.user.id;
+
+    const postExists = await Post.findById(postId);
+    if (!postExists) return res.status(404).json({ message: "Post not found." });
+    if (!content || content.trim() === "") return res.status(400).json({ message: "Comment content cannot be empty." });
+
+    const newComment = new Comment({
+      postId,
+      userId,
+      content,
+    });
+
+    await newComment.save();
+    // Populate user details for real-time update
+    const populatedComment = await newComment.populate('userId', 'firstName lastName profilePicture');
+
+    io.emit('newComment', populatedComment); // Emit new comment event
+    res.status(201).json({ message: "Comment added successfully", comment: populatedComment });
+  } catch (err) {
+    console.error("Error adding comment:", err);
+    res.status(500).json({ message: "Failed to add comment.", error: err.message });
+  }
+});
+
+// ✅ NEW: Get comments for a specific post
+app.get("/api/posts/:postId/comments", authenticateOptional, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const comments = await Comment.find({ postId })
+      .populate('userId', 'firstName lastName profilePicture')
+      .sort({ createdAt: 1 }); // Sort by oldest first
+
+    res.json(comments);
+  } catch (err) {
+    console.error("Error fetching comments:", err);
+    res.status(500).json({ message: "Failed to fetch comments.", error: err.message });
+  }
+});
+
+// ✅ NEW: Delete a comment
+app.delete("/api/comments/:commentId", authenticate, async (req, res) => {
+  try {
+    const { commentId } = req.params;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    const commentToDelete = await Comment.findById(commentId);
+    if (!commentToDelete) {
+      return res.status(404).json({ message: "Comment not found." });
+    }
+
+    const post = await Post.findById(commentToDelete.postId);
+
+    // Allow deletion by comment owner, post creator, or admin
+    const isOwner = commentToDelete.userId.toString() === userId;
+    const isPostCreator = post && post.createdBy.toString() === userId;
+    const isAdmin = userRole === 'admin';
+
+    if (!isOwner && !isPostCreator && !isAdmin) {
+      return res.status(403).json({ message: "Unauthorized to delete this comment." });
+    }
+
+    await Comment.findByIdAndDelete(commentId);
+    io.emit('commentDeleted', { commentId, postId: commentToDelete.postId }); // Emit comment deleted event
+    res.json({ message: "Comment deleted successfully." });
+  } catch (err) {
+    console.error("Error deleting comment:", err);
+    res.status(500).json({ message: "Failed to delete comment.", error: err.message });
+  }
+});
+
 
 // ========== User Management Endpoints (Admin) ==========
 
