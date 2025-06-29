@@ -22,8 +22,9 @@ const MONGO_URI =
 
 const io = new SocketIOServer(server, {
     cors: {
-        origin: "http://localhost:5173",
-        methods: ["GET", "POST", "PUT", "DELETE"] // Allow PUT and DELETE methods
+      origin: "http://localhost:5173",
+      methods: ["GET", "POST", "PUT", "DELETE"],
+      credentials: true, // 💡 NEW: Added this for cookie/auth header support
     }
 });
 
@@ -34,7 +35,7 @@ if (!fs.existsSync(uploadsDir)) {
 }
 
 // Middleware
-app.use(cors({ origin: "http://localhost:5173", credentials: false }));
+app.use(cors({ origin: "http://localhost:5173", credentials: true })); // 💡 NEW: Added credentials: true
 app.use(express.json());
 app.use("/uploads", express.static(uploadsDir));
 
@@ -87,7 +88,6 @@ const postSchema = new mongoose.Schema({
 });
 const Post = mongoose.model("Post", postSchema);
 
-// ✅ NEW: Comment Schema
 const commentSchema = new mongoose.Schema({
   postId: { type: mongoose.Schema.Types.ObjectId, ref: "Post", required: true },
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
@@ -152,7 +152,7 @@ app.post("/api/register", upload.single("profilePicture"), async (req, res) => {
     await newUser.save();
     res.status(201).json({ message: "User registered" });
   } catch (err) {
-    console.error("Registration error:", err); // Added error logging
+    console.error("Registration error:", err);
     res.status(500).json({ message: "Registration error", error: err.message });
   }
 });
@@ -195,22 +195,22 @@ app.post("/api/logout", authenticate, async (req, res) => {
     io.emit('userLoggedOut', { userId: req.user.id });
     res.json({ message: "Logged out" });
   } catch (err) {
-    console.error("Logout error:", err); // Added error logging
+    console.error("Logout error:", err);
     res.status(500).json({ message: "Logout error", error: err.message });
   }
 });
 
 app.get("/api/check-email", async (req, res) => {
     try {
-        const email = req.query.email;
-        if (!email) {
-            return res.status(400).json({ message: "Email query parameter is required." });
-        }
-        const user = await User.findOne({ email });
-        res.json({ exists: !!user });
+      const email = req.query.email;
+      if (!email) {
+        return res.status(400).json({ message: "Email query parameter is required." });
+      }
+      const user = await User.findOne({ email });
+      res.json({ exists: !!user });
     } catch (error) {
-        console.error("Error checking email:", error);
-        res.status(500).json({ message: "Server error during email check." });
+      console.error("Error checking email:", error);
+      res.status(500).json({ message: "Server error during email check." });
     }
 });
 
@@ -222,7 +222,7 @@ app.get("/api/profile", authenticate, async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json({ user });
   } catch (err) {
-    console.error("Error fetching profile:", err); // Added error logging
+    console.error("Error fetching profile:", err);
     res.status(500).json({ message: "Fetch failed", error: err.message });
   }
 });
@@ -235,13 +235,13 @@ app.put("/api/profile", authenticate, upload.fields([{ name: 'profilePicture', m
         email: req.body.email,
       };
   
-      if (req.body.password && req.body.password.trim()) { // Only update password if provided
+      if (req.body.password && req.body.password.trim()) {
           updates.password = req.body.password;
       }
 
       if (req.files && req.files['profilePicture'] && req.files['profilePicture'][0]) {
         updates.profilePicture = `/uploads/${req.files['profilePicture'][0].filename}`;
-      } else if (req.body.removeProfilePicture === 'true') { // Option to remove profile picture
+      } else if (req.body.removeProfilePicture === 'true') {
           const user = await User.findById(req.user.id);
           if (user && user.profilePicture) {
               const oldImagePath = path.join(__dirname, user.profilePicture);
@@ -252,7 +252,7 @@ app.put("/api/profile", authenticate, upload.fields([{ name: 'profilePicture', m
   
       if (req.files && req.files['coverPhoto'] && req.files['coverPhoto'][0]) {
         updates.coverPhoto = `/uploads/${req.files['coverPhoto'][0].filename}`;
-      } else if (req.body.removeCoverPhoto === 'true') { // Option to remove cover photo
+      } else if (req.body.removeCoverPhoto === 'true') {
           const user = await User.findById(req.user.id);
           if (user && user.coverPhoto) {
               const oldImagePath = path.join(__dirname, user.coverPhoto);
@@ -283,15 +283,14 @@ app.put("/api/profile", authenticate, upload.fields([{ name: 'profilePicture', m
         { expiresIn: "1h" }
       );
       
-      // Emit Socket.IO event for real-time update
       io.emit('profileUpdated', updatedUser); 
 
-      res.json({ message: "Profile updated", user: updatedUser, token }); // Send new token to frontend
+      res.json({ message: "Profile updated", user: updatedUser, token });
     } catch (err) {
       console.error("Error updating profile:", err);
       res.status(500).json({ message: "Update failed", error: err.message });
     }
-  });
+});
 
 
 // ========== POST ROUTES ==========
@@ -368,8 +367,8 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
       post.image = `/uploads/${req.file.filename}`;
     } else if (req.body.removeImage === 'true') {
         if (post.image) {
-            const oldImagePath = path.join(__dirname, post.image);
-            await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old image:", err));
+          const oldImagePath = path.join(__dirname, post.image);
+          await fs.promises.unlink(oldImagePath).catch(err => console.error("Failed to delete old image:", err));
         }
         post.image = "";
     }
@@ -387,7 +386,6 @@ app.put("/api/posts/:id", authenticate, requireAdmin, upload.single("image"), as
   }
 });
 
-// 🚀 NEW: Delete a post by ID (admin only) - Added as requested implicitly from previous code structure
 app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -396,15 +394,15 @@ app.delete("/api/posts/:id", authenticate, requireAdmin, async (req, res) => {
     // Delete image file from disk if exists
     if (post.image) {
       const imagePath = path.join(uploadsDir, path.basename(post.image));
-      await fs.promises.unlink(imagePath).catch(err => console.error("Failed to delete post image:", err)); // Using fs.promises.unlink
+      await fs.promises.unlink(imagePath).catch(err => console.error("Failed to delete post image:", err));
     }
 
-    // ✅ NEW: Delete all comments associated with the post
+    // Delete all comments associated with the post
     await Comment.deleteMany({ postId: req.params.id });
 
     await Post.findByIdAndDelete(req.params.id);
-    io.emit('postDeleted', { postId: req.params.id }); // 🚀 NEW: Emit post deleted event
-    io.emit('commentsDeletedForPost', { postId: req.params.id }); // ✅ NEW: Emit event for comments deleted
+    io.emit('postDeleted', { postId: req.params.id });
+    io.emit('commentsDeletedForPost', { postId: req.params.id });
     res.json({ message: "Post deleted successfully" });
   } catch (err) {
     console.error("Error deleting post:", err);
@@ -433,13 +431,13 @@ app.post("/api/posts/:id/like", authenticate, async (req, res) => {
 
     await post.save();
 
-    const updatedPost = await Post.findById(post._id).populate('likedBy', 'firstName lastName profilePicture');
-    io.emit('postUpdated', {
-        _id: updatedPost._id,
-        likes: updatedPost.likes,
-        likedBy: updatedPost.likedBy,
-        likedByCurrentUser: !alreadyLiked // Send the new likedByCurrentUser status
-    });
+    // 💡 NEW: We fetch the post again to populate the createdBy field for the socket event
+    const updatedPost = await Post.findById(post._id).populate('createdBy', 'firstName lastName profilePicture').lean();
+    
+    // ✅ NEW: Add likedByCurrentUser flag for the frontend to update the icon
+    updatedPost.likedByCurrentUser = !alreadyLiked;
+
+    io.emit('postUpdated', updatedPost);
 
     res.json({
       likes: post.likes,
@@ -473,7 +471,6 @@ app.get("/api/posts/:id/likes", authenticateOptional, async (req, res) => {
 
 // ========== COMMENT ROUTES ==========
 
-// ✅ NEW: Add a comment to a post
 app.post("/api/posts/:postId/comments", authenticate, async (req, res) => {
   try {
     const { postId } = req.params;
@@ -494,7 +491,7 @@ app.post("/api/posts/:postId/comments", authenticate, async (req, res) => {
     // Populate user details for real-time update
     const populatedComment = await newComment.populate('userId', 'firstName lastName profilePicture');
 
-    io.emit('newComment', populatedComment); // Emit new comment event
+    io.emit('newComment', populatedComment);
     res.status(201).json({ message: "Comment added successfully", comment: populatedComment });
   } catch (err) {
     console.error("Error adding comment:", err);
@@ -502,13 +499,12 @@ app.post("/api/posts/:postId/comments", authenticate, async (req, res) => {
   }
 });
 
-// ✅ NEW: Get comments for a specific post
 app.get("/api/posts/:postId/comments", authenticateOptional, async (req, res) => {
   try {
     const { postId } = req.params;
     const comments = await Comment.find({ postId })
       .populate('userId', 'firstName lastName profilePicture')
-      .sort({ createdAt: 1 }); // Sort by oldest first
+      .sort({ createdAt: 1 });
 
     res.json(comments);
   } catch (err) {
@@ -517,7 +513,6 @@ app.get("/api/posts/:postId/comments", authenticateOptional, async (req, res) =>
   }
 });
 
-// ✅ NEW: Delete a comment
 app.delete("/api/comments/:commentId", authenticate, async (req, res) => {
   try {
     const { commentId } = req.params;
@@ -541,7 +536,7 @@ app.delete("/api/comments/:commentId", authenticate, async (req, res) => {
     }
 
     await Comment.findByIdAndDelete(commentId);
-    io.emit('commentDeleted', { commentId, postId: commentToDelete.postId }); // Emit comment deleted event
+    io.emit('commentDeleted', { commentId, postId: commentToDelete.postId });
     res.json({ message: "Comment deleted successfully." });
   } catch (err) {
     console.error("Error deleting comment:", err);
@@ -607,82 +602,82 @@ app.delete("/api/users/:id", authenticate, requireAdmin, async (req, res) => {
 // ========== Request/Mail Endpoints ==========
 app.get("/api/requests", authenticate, requireAdmin, async (req, res) => {
     try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit;
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const skip = (page - 1) * limit;
 
-        const totalRequests = await Request.countDocuments();
-        const totalPages = Math.ceil(totalRequests / limit);
+      const totalRequests = await Request.countDocuments();
+      const totalPages = Math.ceil(totalRequests / limit);
 
-        const requests = await Request.find()
-            .populate('userId', 'firstName lastName email')
-            .sort({ submittedAt: -1 })
-            .skip(skip)
-            .limit(limit);
+      const requests = await Request.find()
+          .populate('userId', 'firstName lastName email')
+          .sort({ submittedAt: -1 })
+          .skip(skip)
+          .limit(limit);
 
-        res.json({ mails: requests, totalPages, currentPage: page });
+      res.json({ mails: requests, totalPages, currentPage: page });
     } catch (err) {
-        console.error("Error fetching requests:", err);
-        res.status(500).json({ message: "Failed to fetch requests.", error: err.message });
+      console.error("Error fetching requests:", err);
+      res.status(500).json({ message: "Failed to fetch requests.", error: err.message });
     }
 });
 
 app.get("/api/requests/unread-count", authenticate, requireAdmin, async (req, res) => {
     try {
-        const unreadCount = await Request.countDocuments({ read: false });
-        res.json({ unreadCount });
+      const unreadCount = await Request.countDocuments({ read: false });
+      res.json({ unreadCount });
     } catch (err) {
-        console.error("Error fetching unread count:", err);
-        res.status(500).json({ message: "Failed to fetch unread count.", error: err.message });
+      console.error("Error fetching unread count:", err);
+      res.status(500).json({ message: "Failed to fetch unread count.", error: err.message });
     }
 });
 
 app.put("/api/requests/:id/mark-read", authenticate, requireAdmin, async (req, res) => {
     try {
-        const request = await Request.findByIdAndUpdate(req.params.id, { read: true }, { new: true });
-        if (!request) {
-            return res.status(404).json({ message: "Request not found." });
-        }
-        io.emit('mailRead', { requestId: request._id });
-        res.json({ message: "Request marked as read", request });
+      const request = await Request.findByIdAndUpdate(req.params.id, { read: true }, { new: true });
+      if (!request) {
+        return res.status(404).json({ message: "Request not found." });
+      }
+      io.emit('mailRead', { requestId: request._id });
+      res.json({ message: "Request marked as read", request });
     } catch (err) {
-        console.error("Error marking request as read:", err);
-        res.status(500).json({ message: "Failed to mark request as read.", error: err.message });
+      console.error("Error marking request as read:", err);
+      res.status(500).json({ message: "Failed to mark request as read.", error: err.message });
     }
 });
 
 app.delete("/api/requests/:id", authenticate, requireAdmin, async (req, res) => {
     try {
-        const deletedRequest = await Request.findByIdAndDelete(req.params.id);
-        if (!deletedRequest) {
-            return res.status(404).json({ message: "Request not found." });
-        }
-        res.json({ message: "Request deleted successfully" });
+      const deletedRequest = await Request.findByIdAndDelete(req.params.id);
+      if (!deletedRequest) {
+        return res.status(404).json({ message: "Request not found." });
+      }
+      res.json({ message: "Request deleted successfully" });
     } catch (err) {
-        console.error("Error deleting request:", err);
-        res.status(500).json({ message: "Failed to delete request.", error: err.message });
+      console.error("Error deleting request:", err);
+      res.status(500).json({ message: "Failed to delete request.", error: err.message });
     }
 });
 
 app.post("/api/request", authenticate, async (req, res) => {
     try {
-        const { title, message } = req.body;
-        const userId = req.user.id;
+      const { title, message } = req.body;
+      const userId = req.user.id;
 
-        const newRequest = new Request({
-            userId,
-            title,
-            message,
-        });
+      const newRequest = new Request({
+          userId,
+          title,
+          message,
+      });
 
-        await newRequest.save();
-        const populatedRequest = await newRequest.populate('userId', 'email');
-        io.emit('newMailRequest', populatedRequest);
+      await newRequest.save();
+      const populatedRequest = await newRequest.populate('userId', 'email');
+      io.emit('newMailRequest', populatedRequest);
 
-        res.status(201).json({ message: "Request submitted successfully!", request: newRequest });
+      res.status(201).json({ message: "Request submitted successfully!", request: newRequest });
     } catch (err) {
-        console.error("Error submitting request:", err);
-        res.status(500).json({ message: "Failed to submit request.", error: err.message });
+      console.error("Error submitting request:", err);
+      res.status(500).json({ message: "Failed to submit request.", error: err.message });
     }
 });
 
@@ -690,6 +685,10 @@ app.post("/api/request", authenticate, async (req, res) => {
 // Socket.IO connection event
 io.on('connection', (socket) => {
     console.log(`User connected with socket ID: ${socket.id} 🤝`);
+
+    // 💡 NEW: Handle authentication and add user to a room if needed
+    // This is a more advanced step for real-time user status, but not strictly needed for this fix.
+    // socket.on('authenticate', (token) => { ... });
 
     socket.on('disconnect', () => {
         console.log(`User disconnected: ${socket.id} 🚪`);
