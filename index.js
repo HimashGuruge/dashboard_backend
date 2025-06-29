@@ -555,10 +555,3 @@ io.on('connection', (socket) => {
     });
 });
 
-
-// Start the HTTP server, not the Express app
-server.listen(PORT, () => {
-  console.log(`🚀 Server running at http://localhost:${PORT}`);
-  console.log(`⚡️ Socket.IO is ready for real-time connections!`);
-});
-
